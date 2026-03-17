@@ -63,6 +63,8 @@ class SOCKS5Proxy:
         """Start the SOCKS5 proxy server"""
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Set timeout to allow checking self.running periodically
+        self.server_socket.settimeout(1.0)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(5)
         self.running = True
@@ -89,6 +91,7 @@ class SOCKS5Proxy:
         while self.running:
             try:
                 client_socket, addr = self.server_socket.accept()
+                print(f"[*] New connection from {addr}")
                 client_thread = threading.Thread(
                     target=self._handle_client,
                     args=(client_socket,),
@@ -96,19 +99,33 @@ class SOCKS5Proxy:
                 )
                 client_thread.start()
                 self.threads.append(client_thread)
-            except:
+            except socket.timeout:
+                # Timeout is expected, continue loop
+                continue
+            except Exception as e:
+                if self.running:
+                    print(f"[!] Accept error: {e}")
                 break
     
     def _handle_client(self, client_socket):
         """Handle SOCKS5 client connection"""
         try:
-            # SOCKS5 greeting
+            # SOCKS5 greeting: VER | NMETHODS | METHODS
             greeting = client_socket.recv(2)
             if len(greeting) < 2 or greeting[0] != 0x05:
+                print(f"[!] Invalid SOCKS version: {greeting[0] if greeting else 'none'}")
                 client_socket.close()
                 return
             
-            # No authentication
+            # Read methods list
+            nmethods = greeting[1]
+            methods = client_socket.recv(nmethods)
+            if len(methods) < nmethods:
+                print("[!] Failed to read methods")
+                client_socket.close()
+                return
+            
+            # Send: VER | METHOD (0x00 = no authentication)
             client_socket.sendall(b'\x05\x00')
             
             # Connection request
@@ -131,22 +148,36 @@ class SOCKS5Proxy:
             port_data = client_socket.recv(2)
             port = struct.unpack('>H', port_data)[0]
             
+            print(f"[*] Connecting to {addr}:{port}")
+            
             # Connect to target
             target_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             target_socket.settimeout(10)
             
             try:
                 target_socket.connect((addr, port))
+                print(f"[+] Connected to {addr}:{port}")
+                
                 # Send success response
                 client_socket.sendall(b'\x05\x00\x00\x01' + socket.inet_aton('0.0.0.0') + struct.pack('>H', 0))
                 
                 # Start forwarding with fragmentation
                 self._forward_data(client_socket, target_socket)
             except Exception as e:
+                print(f"[!] Failed to connect to {addr}:{port}: {e}")
                 # Send failure response
-                client_socket.sendall(b'\x05\x05\x00\x01' + socket.inet_aton('0.0.0.0') + struct.pack('>H', 0))
-                target_socket.close()
-                client_socket.close()
+                try:
+                    client_socket.sendall(b'\x05\x05\x00\x01' + socket.inet_aton('0.0.0.0') + struct.pack('>H', 0))
+                except:
+                    pass
+                try:
+                    target_socket.close()
+                except:
+                    pass
+                try:
+                    client_socket.close()
+                except:
+                    pass
         except Exception:
             pass
         finally:
