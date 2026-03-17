@@ -43,7 +43,7 @@ TELEGRAM_DOMAINS = [
 @dataclass
 class ProxyConfig:
     local_port: int = 1080
-    fragment_size: int = 2
+    fragment_size: int = 40  # Increased for better performance
     use_doh: bool = True
     enabled: bool = False
 
@@ -188,26 +188,35 @@ class SOCKS5Proxy:
     
     def _forward_data(self, client_socket, target_socket):
         """Forward data between client and target with fragmentation"""
+        # Enable TCP_NODELAY for lower latency
+        client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        target_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        
         sockets = [client_socket, target_socket]
         first_packet = True
         
         while self.running:
             try:
-                readable, _, _ = select.select(sockets, [], [], 1)
+                # Reduced timeout for faster response
+                readable, _, _ = select.select(sockets, [], [], 0.1)
                 
                 for sock in readable:
-                    data = sock.recv(8192)
+                    data = sock.recv(16384)  # Larger buffer
                     if not data:
                         return
                     
                     if sock == client_socket:
-                        # Client to target - apply fragmentation on first packet (TLS ClientHello)
-                        if first_packet and len(data) > 10:
-                            # Fragment the data
-                            for i in range(0, len(data), self.fragment_size):
+                        # Client to target - apply fragmentation ONLY on first packet
+                        if first_packet and len(data) > 100:
+                            # Fragment only the beginning (SNI part) - NO DELAYS
+                            fragment_part = min(len(data), 150)
+                            # Send first part in fragments (no sleep - fragmentation itself is enough)
+                            for i in range(0, fragment_part, self.fragment_size):
                                 chunk = data[i:i+self.fragment_size]
                                 target_socket.sendall(chunk)
-                                time.sleep(0.001)  # Small delay between fragments
+                            # Send rest normally
+                            if len(data) > fragment_part:
+                                target_socket.sendall(data[fragment_part:])
                             first_packet = False
                         else:
                             target_socket.sendall(data)
@@ -379,10 +388,13 @@ class SimpleTUI:
                 print("[!] Неверное значение")
         elif choice == "2":
             try:
-                size = int(input("Введите размер фрагмента (1-10): "))
-                if 1 <= size <= 10:
+                size = int(input("Введите размер фрагмента (10-100, рекомендуется 40): "))
+                if 10 <= size <= 100:
                     self.unblocker.config.fragment_size = size
                     print("[+] Размер фрагмента изменен")
+                    print("[!] Перезапустите разблокировку для применения")
+                else:
+                    print("[!] Значение должно быть от 10 до 100")
             except ValueError:
                 print("[!] Неверное значение")
         elif choice == "3":
