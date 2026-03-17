@@ -192,16 +192,23 @@ class SOCKS5Proxy:
         client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         target_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         
+        # Increase socket buffers for better throughput
+        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)  # 512KB
+        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 524288)
+        target_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)
+        target_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 524288)
+        
         sockets = [client_socket, target_socket]
         first_packet = True
         
         while self.running:
             try:
-                # Reduced timeout for faster response
-                readable, _, _ = select.select(sockets, [], [], 0.1)
+                # Very short timeout for maximum throughput
+                readable, _, _ = select.select(sockets, [], [], 0.01)
                 
                 for sock in readable:
-                    data = sock.recv(16384)  # Larger buffer
+                    # Large buffer for media files
+                    data = sock.recv(65536)  # 64KB buffer
                     if not data:
                         return
                     
@@ -210,7 +217,7 @@ class SOCKS5Proxy:
                         if first_packet and len(data) > 100:
                             # Fragment only the beginning (SNI part) - NO DELAYS
                             fragment_part = min(len(data), 150)
-                            # Send first part in fragments (no sleep - fragmentation itself is enough)
+                            # Send first part in fragments
                             for i in range(0, fragment_part, self.fragment_size):
                                 chunk = data[i:i+self.fragment_size]
                                 target_socket.sendall(chunk)
@@ -219,9 +226,10 @@ class SOCKS5Proxy:
                                 target_socket.sendall(data[fragment_part:])
                             first_packet = False
                         else:
+                            # High-speed mode for media transfers
                             target_socket.sendall(data)
                     else:
-                        # Target to client - no fragmentation
+                        # Target to client - high-speed mode
                         client_socket.sendall(data)
             except:
                 break
