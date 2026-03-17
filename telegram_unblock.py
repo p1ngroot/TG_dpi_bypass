@@ -43,7 +43,7 @@ TELEGRAM_DOMAINS = [
 @dataclass
 class ProxyConfig:
     local_port: int = 1080
-    fragment_size: int = 40  # Increased for better performance
+    fragment_size: int = 80  # Larger fragments = better performance
     use_doh: bool = True
     enabled: bool = False
 
@@ -187,50 +187,53 @@ class SOCKS5Proxy:
                 pass
     
     def _forward_data(self, client_socket, target_socket):
-        """Forward data between client and target with fragmentation"""
-        # Enable TCP_NODELAY for lower latency
+        """Forward data between client and target - MAXIMUM SPEED"""
+        # Ultra-fast settings
         client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         target_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        
-        # Increase socket buffers for better throughput
-        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)  # 512KB
-        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 524288)
-        target_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 524288)
-        target_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 524288)
+        client_socket.setblocking(False)
+        target_socket.setblocking(False)
         
         sockets = [client_socket, target_socket]
         first_packet = True
         
-        while self.running:
+        while True:
             try:
-                # Very short timeout for maximum throughput
-                readable, _, _ = select.select(sockets, [], [], 0.01)
+                readable, _, exceptional = select.select(sockets, [], sockets, 60)
+                
+                if exceptional:
+                    break
+                
+                if not readable:
+                    break
                 
                 for sock in readable:
-                    # Large buffer for media files
-                    data = sock.recv(65536)  # 64KB buffer
+                    try:
+                        data = sock.recv(262144)  # 256KB - huge buffer for media
+                    except:
+                        return
+                    
                     if not data:
                         return
                     
-                    if sock == client_socket:
-                        # Client to target - apply fragmentation ONLY on first packet
-                        if first_packet and len(data) > 100:
-                            # Fragment only the beginning (SNI part) - NO DELAYS
-                            fragment_part = min(len(data), 150)
-                            # Send first part in fragments
-                            for i in range(0, fragment_part, self.fragment_size):
-                                chunk = data[i:i+self.fragment_size]
-                                target_socket.sendall(chunk)
-                            # Send rest normally
-                            if len(data) > fragment_part:
-                                target_socket.sendall(data[fragment_part:])
-                            first_packet = False
+                    try:
+                        if sock == client_socket:
+                            # Only fragment FIRST packet
+                            if first_packet and len(data) > 50:
+                                # Send first 2 fragments only
+                                target_socket.send(data[:self.fragment_size])
+                                target_socket.send(data[self.fragment_size:self.fragment_size*2])
+                                # Rest at full speed
+                                if len(data) > self.fragment_size*2:
+                                    target_socket.sendall(data[self.fragment_size*2:])
+                                first_packet = False
+                            else:
+                                target_socket.sendall(data)
                         else:
-                            # High-speed mode for media transfers
-                            target_socket.sendall(data)
-                    else:
-                        # Target to client - high-speed mode
-                        client_socket.sendall(data)
+                            # Server to client - FULL SPEED always
+                            client_socket.sendall(data)
+                    except:
+                        return
             except:
                 break
 
