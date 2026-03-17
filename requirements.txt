@@ -1,0 +1,3 @@
+# Telegram Unblock - Python Requirements
+# All dependencies are from Python standard library (3.7+)
+# No external packages required for basic functionality
